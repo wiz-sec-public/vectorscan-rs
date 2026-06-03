@@ -18,7 +18,18 @@ This crate builds a vendored copy of Vectorscan from source.
 apt install build-essential cmake libboost-all-dev ragel patch pkg-config libsqlite3-dev
 ```
 
-This has been tested on x86_64 Linux.
+### Windows (MSVC, `x86_64-pc-windows-msvc`)
+Vectorscan is built MSVC-ABI with `clang-cl` and linked **statically** (no DLL), so it
+links into any MSVC binary. The following must be on `PATH`:
+- LLVM (`clang-cl`, `llvm-nm`, `llvm-objcopy`)
+- [Ninja](https://ninja-build.org)
+- Python 3 (only for `fat_runtime` builds — it drives the COFF symbol renamer)
+- a Visual Studio / MSVC toolchain (for the C++ runtime, headers, and Windows SDK)
+
+Boost headers are supplied via the `VECTORSCAN_BOOST_INCLUDE` environment variable,
+pointing at a directory that contains a `boost/` subdirectory.
+
+This has been tested on x86_64 Linux and x86_64 Windows (MSVC).
 
 
 ## Vectorscan Source
@@ -36,7 +47,9 @@ git submodule update --init
 
 A set of patches in [`patches/`](patches/) are applied on top of the upstream Vectorscan 5.4.11 source at build time.
 They are applied in alphabetical order (hence the numeric prefix).
-These patches relax some platform assumptions that don't hold outside Linux.
+These patches backport fixes from later Vectorscan releases and add what this crate
+needs: a fat runtime that doesn't require glibc `ifunc`, an MSVC/`clang-cl` static
+build, and relaxed platform assumptions that don't hold outside Linux.
 
 ### `01-static-dispatch.patch`
 Replaces the `__attribute__((ifunc(...)))` dispatch mechanism in `src/dispatcher.c` with a static function pointer pattern.
@@ -54,13 +67,15 @@ Modifies `cmake/osdetection.cmake` to:
 Based on upstream commit [`0ba7222`](https://github.com/VectorCamp/vectorscan/commit/0ba7222ca832b4e56ba457daf59f226050fcd1c4) by voidbar, extended for 5.4.11.
 
 ### `03-build-wrapper-mingw.patch`
-Modifies `cmake/build_wrapper.sh` (used by the fat runtime to rename symbols per microarchitecture) to work on MinGW:
+Makes `cmake/build_wrapper.sh` (used by the fat runtime to rename symbols per
+microarchitecture) configurable instead of hardcoding GNU tool names and `libc.so.6`:
 - Uses configurable `$NM`, `$OBJCOPY`, `$OBJDUMP` instead of hardcoded tool names.
-- Reads the C runtime library path from `$VECTORSCAN_LIBC_SO` (set by `build.rs`) instead of hardcoding `libc.so.6`.
-- Detects shared vs static libraries for correct `nm` flags (`-D` for `.so`, omitted for `.a`).
-- Renames `.refptr` COMDAT sections to avoid link-time conflicts on MinGW.
+- Reads the C runtime path from `$VECTORSCAN_LIBC_SO` (set by `build.rs`) instead of hardcoding `libc.so.6`.
+- Detects shared vs static libraries for correct `nm` flags.
 
-This patch has no upstream equivalent; it is custom for Windows MinGW support.
+`build.rs` uses this on **Linux** fat-runtime builds (pointing `$VECTORSCAN_LIBC_SO` at
+`libc.so.6`). The MSVC fat runtime does not use this script — it renames COFF symbols
+via [`fat_rename.py`](../fat_rename.py) instead (see `msvc-support.patch` below).
 
 ### `04-pkgconfig-extra-libs.patch`
 Adds a `PKGCONFIG_EXTRA_LIBS` cmake cache variable and substitutes it into `libhs.pc.in` and `chimera/libch.pc.in`.
@@ -73,6 +88,22 @@ Changes `find_package(PkgConfig REQUIRED)` to `find_package(PkgConfig QUIET)` in
 On Windows, pkg-config is often unavailable; making it optional allows cmake to proceed since Vectorscan does not strictly require it to build.
 
 This change is present in upstream master but not in 5.4.11.
+
+### `msvc-support.patch`
+Adds MSVC (`clang-cl`) support, bundling three changes:
+- **`src/ue2common.h`** — guards `#define alignof __alignof` to C only. In C++ `alignof`
+  is a keyword, and macroizing it is rejected by (and breaks) the MSVC C++ standard
+  library used by `clang-cl`.
+- **`src/util/alloc.cpp`** — pairs `_aligned_malloc` with `_aligned_free`. The
+  `HAVE__ALIGNED_MALLOC` path (selected by `clang-cl`/MSVC) allocated with
+  `_aligned_malloc` but freed with plain `free()`, which corrupts the heap on Windows.
+- **`CMakeLists.txt`** — for MSVC fat-runtime builds, replaces the POSIX
+  `build_wrapper.sh` per-object symbol rename (which cannot run under `clang-cl`) with a
+  whole-variant COFF pass: each micro-arch variant's objects are renamed together via
+  [`fat_rename.py`](../fat_rename.py) (`llvm-nm` + `llvm-objcopy`). Gated on `MSVC`, so
+  the Linux/BSD path is unaffected.
+
+This patch has no upstream equivalent.
 
 
 ## Implementation Notes

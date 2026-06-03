@@ -1,5 +1,5 @@
 [workspace]
-members = ["vectorscan-rs", "vectorscan-rs-sys"]
+members = ["vectorscan-rs", "vectorscan-rs-sys", "vectorscan-rs-example"]
 resolver = "2"
 
 [workspace.package]

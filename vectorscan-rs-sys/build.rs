@@ -8,12 +8,15 @@ fn env(name: &str) -> String {
 
 fn rename_library(dst: &Path) {
     for lib_folder in &[dst.join("lib"), dst.join("lib64")] {
-        let src = lib_folder.join("libhs.a");
-        let dest = lib_folder.join("libvs.a");
-        if src.exists() {
-            fs::rename(&src, &dest).unwrap_or_else(|e| {
-                panic!("Failed to rename {:?} to {:?}: {}", src, dest, e)
-            });
+        // GNU/Unix toolchains produce libhs.a; MSVC/clang-cl produces hs.lib.
+        for (from, to) in &[("libhs.a", "libvs.a"), ("hs.lib", "vs.lib")] {
+            let src = lib_folder.join(from);
+            let dest = lib_folder.join(to);
+            if src.exists() {
+                fs::rename(&src, &dest).unwrap_or_else(|e| {
+                    panic!("Failed to rename {:?} to {:?}: {}", src, dest, e)
+                });
+            }
         }
     }
 }
@@ -49,7 +52,7 @@ fn resolve_submodule_head(submodule_dir: &Path) -> Option<PathBuf> {
     head.exists().then_some(head)
 }
 
-fn build_vectorscan(manifest_dir: &Path, out_dir: &Path) {
+fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) {
     let include_dir = out_dir
         .join("include")
         .into_os_string()
@@ -128,7 +131,7 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path) {
         .define("BUILD_DOC", "OFF");
 
     cfg_define_feature!("BUILD_UNIT", "unit_hyperscan");
-    cfg_define_feature!("USE_CPU_NAIVE", "cpu_native");
+    cfg_define_feature!("USE_CPU_NATIVE", "cpu_native");
 
     if cfg!(feature = "asan") {
         cfg.define("SANITIZE", "address");
@@ -194,19 +197,85 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path) {
         cfg.define("BUILD_AVX512VBMI", "ON");
     }
 
-    if cfg!(feature = "fat_runtime") {
-        let libc_path = String::from_utf8(
-            Command::new("cc")
-                .args(["--print-file-name=libc.so.6"])
-                .output()
-                .expect("Failed to get libc.so.6 path from cc")
-                .stdout,
+    if is_windows_msvc {
+        // Build with clang-cl so the objects are MSVC-ABI and the resulting
+        // static lib links into any MSVC binary (no DLL boundary needed).
+        cfg.generator("Ninja");
+        cfg.define("CMAKE_C_COMPILER", "clang-cl");
+        cfg.define("CMAKE_CXX_COMPILER", "clang-cl");
+        // clang-cl rejects a few GNU-style flags the build emits; silence those
+        // and pass the MSVC-style language / exception-handling flags it wants.
+        for f in ["-Wno-unknown-argument", "-Wno-unused-command-line-argument", "/std:c17"] {
+            cfg.cflag(f);
+        }
+        for f in ["-Wno-unknown-argument", "-Wno-unused-command-line-argument", "/std:c++17", "/EHsc"] {
+            cfg.cxxflag(f);
+        }
+        // Boost headers in isolation: pointing CMake at e.g. an MSYS2 include
+        // dir would drag mingw's libc/intrinsic headers onto clang-cl's system
+        // include path and break clang's <mmintrin.h>. Junction *only* boost
+        // into the source tree's include/ dir (which vectorscan's boost.cmake
+        // probes first) and force module-mode FindBoost to resolve there.
+        let boost_include = env("VECTORSCAN_BOOST_INCLUDE");
+        let boost_target = Path::new(&boost_include).join("boost");
+        assert!(
+            boost_target.join("version.hpp").exists(),
+            "VECTORSCAN_BOOST_INCLUDE ({}) must contain boost/version.hpp",
+            boost_include
+        );
+        // Junction only boost/ into a private include dir OUTSIDE the source tree
+        // (build.rs wipes vectorscan-src each run) and point BOOST_ROOT at it.
+        let boost_root = out_dir.join("boost-root");
+        let boost_link = boost_root.join("include").join("boost");
+        if !boost_link.exists() {
+            fs::create_dir_all(boost_root.join("include"))
+                .expect("Failed to create boost-root/include");
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&boost_link)
+                .arg(&boost_target)
+                .status()
+                .expect("Failed to run mklink for boost junction");
+            assert!(status.success(), "mklink /J for boost junction failed");
+        }
+        cfg.define("BOOST_ROOT", &boost_root);
+        cfg.define("CMAKE_POLICY_DEFAULT_CMP0167", "OLD");
+        cfg.define("Boost_NO_BOOST_CMAKE", "ON");
+        cfg.define("Boost_NO_SYSTEM_PATHS", "ON");
+        // The MSVC fat-runtime CMake path (patch 08) invokes cmake/fat_rename.py
+        // (a COFF whole-variant symbol renamer); place it where
+        // ${PROJECT_SOURCE_DIR}/cmake expects it. Harmless for non-fat builds
+        // (the patched CMake only references it inside the MSVC fat branch).
+        fs::copy(
+            manifest_dir.join("fat_rename.py"),
+            vectorscan_src_dir.join("cmake").join("fat_rename.py"),
         )
-        .expect("Invalid UTF-8 in cc output")
-        .trim()
-        .to_string();
-        std::env::set_var("VECTORSCAN_LIBC_SO", &libc_path);
-        eprintln!("VECTORSCAN_LIBC_SO={}", std::env::var("VECTORSCAN_LIBC_SO").unwrap());
+        .expect("Failed to copy fat_rename.py into vectorscan source tree");
+        // Build only the `hs` static lib, not the default `all`/`install`
+        // target. That avoids compiling the unit tests and util test-helpers
+        // (e.g. util/expressions.cpp needs POSIX dirent.h), which don't build
+        // on MSVC and aren't needed to link the library.
+        cfg.build_target("hs");
+    }
+
+    if cfg!(feature = "fat_runtime") {
+        if is_windows_msvc {
+            // MSVC fat runtime renames symbols via cmake/fat_rename.py, a
+            // self-contained COFF pass that needs no libc symbol list.
+        } else {
+            let libc_path = String::from_utf8(
+                Command::new("cc")
+                    .args(["--print-file-name=libc.so.6"])
+                    .output()
+                    .expect("Failed to get libc.so.6 path from cc")
+                    .stdout,
+            )
+            .expect("Invalid UTF-8 in cc output")
+            .trim()
+            .to_string();
+            std::env::set_var("VECTORSCAN_LIBC_SO", &libc_path);
+            eprintln!("VECTORSCAN_LIBC_SO={libc_path}");
+        }
     }
 
     cfg.build();
@@ -218,6 +287,17 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path) {
         "cargo:rustc-link-search={}",
         out_dir.join("lib64").display()
     );
+
+    if is_windows_msvc {
+        // With `build_target("hs")` (no install step) the archive stays in the
+        // CMake binary dir; rename hs.lib -> vs.lib there and link from it.
+        let build_root = out_dir.join("build");
+        rename_library(&build_root);
+        println!(
+            "cargo:rustc-link-search={}",
+            build_root.join("lib").display()
+        );
+    }
 }
 
 fn main() {
@@ -229,6 +309,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=patches");
+    println!("cargo:rerun-if-changed=fat_rename.py");
 
     // CARGO_FEATURE_* env vars are set by cargo when features are enabled.
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FAT_RUNTIME");
@@ -248,12 +329,18 @@ fn main() {
     let out_dir = PathBuf::from(env("OUT_DIR"));
 
     if is_windows_msvc {
-        let lib_dir = std::env::var("VECTORSCAN_LIB_DIR").expect(
-            "VECTORSCAN_LIB_DIR must be set for MSVC targets, \
-             pointing to a directory containing vs.lib (import library for vs.dll)",
-        );
-        println!("cargo:rustc-link-search={lib_dir}");
-        println!("cargo:rustc-link-lib=dylib=vs");
+        // Build vectorscan from source as a static, MSVC-ABI library (clang-cl)
+        // and link it statically -- no DLL, links into any MSVC binary.
+        if let Some(lib_dir) = std::env::var_os("VECTORSCAN_LIB_DIR") {
+            println!("cargo:rustc-link-search={}", lib_dir.to_string_lossy());
+        } else {
+            build_vectorscan(&manifest_dir, &out_dir, is_windows_msvc);
+        }
+
+        println!("cargo:rustc-link-lib=static=vs");
+        // The MSVC C++ runtime (libcpmt/vcruntime/ucrt) is auto-linked via the
+        // #pragma comment(lib) directives clang-cl embeds in the objects, so no
+        // explicit C++ standard library needs to be added here.
     } else {
         let compiler_version_out = String::from_utf8(
             Command::new("c++")
@@ -275,7 +362,7 @@ fn main() {
         if let Some(lib_dir) = std::env::var_os("VECTORSCAN_LIB_DIR") {
             println!("cargo:rustc-link-search={}", lib_dir.display());
         } else {
-            build_vectorscan(&manifest_dir, &out_dir);
+            build_vectorscan(&manifest_dir, &out_dir, false);
         }
 
         println!("cargo:rustc-link-lib=static=vs");
@@ -293,12 +380,15 @@ fn main() {
 
     #[cfg(feature = "bindgen")]
     {
+        // Headers are installed to OUT_DIR/include by build_vectorscan
+        // (via CMAKE_INSTALL_INCLUDEDIR); point bindgen's clang there.
+        let include_dir = out_dir.join("include");
         let config = bindgen::Builder::default()
             .allowlist_function("hs_.*")
             .allowlist_type("hs_.*")
             .allowlist_var("HS_.*")
             .header("wrapper.h")
-            .clang_arg(format!("-I{}", &include_dir));
+            .clang_arg(format!("-I{}", include_dir.display()));
         config
             .generate()
             .expect("Unable to generate bindings")

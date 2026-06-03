@@ -1,0 +1,90 @@
+MSVC (clang-cl) support for Vectorscan 5.4.11.
+
+Three source/build changes needed to build vectorscan as a static MSVC-ABI
+library with clang-cl (applied after the 01-05 backports):
+  * src/ue2common.h    - guard the alignof macro to C only (alignof is a keyword
+                         in C++ and macroizing it breaks the MSVC C++ stdlib).
+  * src/util/alloc.cpp - pair _aligned_malloc with _aligned_free (the
+                         HAVE__ALIGNED_MALLOC path freed with plain free(),
+                         corrupting the heap on Windows).
+  * CMakeLists.txt     - MSVC fat-runtime: rename each micro-arch variant's COFF
+                         symbols in one pass (cmake/fat_rename.py) instead of the
+                         POSIX build_wrapper.sh; gated on MSVC.
+diff --git a/src/ue2common.h b/src/ue2common.h
+--- a/src/ue2common.h
++++ b/src/ue2common.h
+@@ -92,5 +92,9 @@
+ /** no, seriously, inline it, even if building in debug mode */
+ #define really_really_inline inline __attribute__ ((always_inline, unused))
+ #define never_inline __attribute__ ((noinline))
+-#define alignof __alignof
++/* In C++ `alignof` is a keyword; macroizing it is forbidden by (and breaks)
++ * the MSVC C++ standard library used by clang-cl. Only provide the shim for C. */
++#if !defined(__cplusplus)
++#define alignof __alignof
++#endif
+ #define HAVE_TYPEOF 1
+diff --git a/src/util/alloc.cpp b/src/util/alloc.cpp
+--- a/src/util/alloc.cpp
++++ b/src/util/alloc.cpp
+@@ -87,6 +87,11 @@ void aligned_free_internal(void *ptr) {
+
+ #if defined(__MINGW32__) || defined(__MINGW64__)
+     __mingw_aligned_free(ptr);
++#elif defined(HAVE__ALIGNED_MALLOC)
++    /* Memory from _aligned_malloc (the HAVE__ALIGNED_MALLOC path used by
++     * clang-cl/MSVC) must be released with _aligned_free; passing it to plain
++     * free() corrupts the heap on Windows. */
++    _aligned_free(ptr);
+ #else
+     free(ptr);
+ #endif
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a11670e..7ab649d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -962,6 +962,29 @@ else ()
+                     )
+             endif (BUILD_AVX512VBMI)
+ 
++            # With the MSVC ABI (clang-cl) the POSIX build_wrapper.sh can't run
++            # and ELF symbol renaming doesn't apply to COFF objects. Clear the
++            # per-object launcher and instead rename each variant's symbols in
++            # one COFF pass (cmake/fat_rename.py) once its objects are compiled.
++            # Gated on MSVC (not WIN32) so the mingw/windows-gnu path keeps using
++            # build_wrapper.sh.
++            if (MSVC)
++                find_program(PYTHON_EXE NAMES python python3 REQUIRED)
++                foreach (fatv core2 corei7 avx2 avx512 avx512vbmi)
++                    if (TARGET hs_exec_${fatv})
++                        set_target_properties(hs_exec_${fatv} PROPERTIES RULE_LAUNCH_COMPILE "")
++                        add_custom_target(rename_hs_exec_${fatv} ALL
++                            COMMAND ${PYTHON_EXE} ${PROJECT_SOURCE_DIR}/cmake/fat_rename.py
++                                    ${fatv} ${CMAKE_MODULE_PATH}/keep.syms.in
++                                    ${CMAKE_BINARY_DIR}/CMakeFiles/hs_exec_${fatv}.dir
++                            COMMENT "COFF symbol rename for ${fatv} fat-runtime variant"
++                            VERBATIM)
++                        add_dependencies(rename_hs_exec_${fatv} hs_exec_${fatv})
++                        set_property(GLOBAL APPEND PROPERTY FAT_RENAME_TARGETS rename_hs_exec_${fatv})
++                    endif()
++                endforeach()
++            endif()
++
+             add_library(hs_exec_common OBJECT
+                 ${hs_exec_common_SRCS}
+                 src/dispatcher.c
+@@ -1215,3 +1238,14 @@ if(BUILD_BENCHMARKS)
+ endif()
+ 
+ add_subdirectory(doc/dev-reference)
++
++# MSVC fat-runtime: make the static libraries depend on the per-variant COFF
++# symbol-rename pass (FAT_RENAME_TARGETS is populated in the fat static branch).
++if (MSVC AND FAT_RUNTIME)
++    get_property(_fat_rename_targets GLOBAL PROPERTY FAT_RENAME_TARGETS)
++    foreach (_lib hs hs_runtime)
++        if (TARGET ${_lib} AND _fat_rename_targets)
++            add_dependencies(${_lib} ${_fat_rename_targets})
++        endif()
++    endforeach()
++endif()
