@@ -18,12 +18,7 @@ This crate builds a vendored copy of Vectorscan from source.
 apt install build-essential cmake libboost-all-dev ragel patch pkg-config libsqlite3-dev
 ```
 
-### Windows (MSYS2 MinGW64)
-```
-pacman -S mingw-w64-x86_64-boost mingw-w64-x86_64-cmake mingw-w64-x86_64-ragel mingw-w64-x86_64-sqlite3 mingw-w64-x86_64-pkgconf
-```
-
-This has been tested on x86_64 Linux and x86_64 Windows (MinGW).
+This has been tested on x86_64 Linux.
 
 
 ## Vectorscan Source
@@ -41,7 +36,7 @@ git submodule update --init
 
 A set of patches in [`patches/`](patches/) are applied on top of the upstream Vectorscan 5.4.11 source at build time.
 They are applied in alphabetical order (hence the numeric prefix).
-These patches enable Windows (MinGW) support and relax some platform assumptions that don't hold outside Linux.
+These patches relax some platform assumptions that don't hold outside Linux.
 
 ### `01-static-dispatch.patch`
 Replaces the `__attribute__((ifunc(...)))` dispatch mechanism in `src/dispatcher.c` with a static function pointer pattern.

@@ -49,7 +49,7 @@ fn resolve_submodule_head(submodule_dir: &Path) -> Option<PathBuf> {
     head.exists().then_some(head)
 }
 
-fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_gnu: bool) {
+fn build_vectorscan(manifest_dir: &Path, out_dir: &Path) {
     let include_dir = out_dir
         .join("include")
         .into_os_string()
@@ -118,8 +118,7 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_gnu: bool) {
         };
     }
 
-    let profile = if is_windows_gnu { "RelWithDebInfo" } else { "Release" };
-    cfg.profile(profile)
+    cfg.profile("Release")
         .define("CMAKE_INSTALL_INCLUDEDIR", &include_dir)
         .define("CMAKE_VERBOSE_MAKEFILE", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
@@ -195,42 +194,18 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_gnu: bool) {
         cfg.define("BUILD_AVX512VBMI", "ON");
     }
 
-    if is_windows_gnu {
-        cfg.define("GNUCC_ARCH", "x86-64");
-        cfg.define("TUNE_FLAG", "generic");
-        cfg.cflag("-Wno-narrowing");
-        cfg.cxxflag("-Wno-narrowing");
-    }
-
     if cfg!(feature = "fat_runtime") {
-        if is_windows_gnu {
-            let libc_path = String::from_utf8(
-                Command::new("gcc")
-                    .args(["--print-file-name=libmsvcrt.a"])
-                    .output()
-                    .expect("Failed to get libmsvcrt.a path from gcc")
-                    .stdout,
-            )
-            .expect("Invalid UTF-8 in gcc output")
-            .trim()
-            .to_string();
-            std::env::set_var("VECTORSCAN_LIBC_SO", &libc_path);
-            std::env::set_var("NM", "nm");
-            std::env::set_var("OBJCOPY", "objcopy");
-            std::env::set_var("OBJDUMP", "objdump");
-        } else {
-            let libc_path = String::from_utf8(
-                Command::new("cc")
-                    .args(["--print-file-name=libc.so.6"])
-                    .output()
-                    .expect("Failed to get libc.so.6 path from cc")
-                    .stdout,
-            )
-            .expect("Invalid UTF-8 in cc output")
-            .trim()
-            .to_string();
-            std::env::set_var("VECTORSCAN_LIBC_SO", &libc_path);
-        }
+        let libc_path = String::from_utf8(
+            Command::new("cc")
+                .args(["--print-file-name=libc.so.6"])
+                .output()
+                .expect("Failed to get libc.so.6 path from cc")
+                .stdout,
+        )
+        .expect("Invalid UTF-8 in cc output")
+        .trim()
+        .to_string();
+        std::env::set_var("VECTORSCAN_LIBC_SO", &libc_path);
         eprintln!("VECTORSCAN_LIBC_SO={}", std::env::var("VECTORSCAN_LIBC_SO").unwrap());
     }
 
@@ -248,7 +223,6 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_gnu: bool) {
 fn main() {
     let target_os = env("CARGO_CFG_TARGET_OS");
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    let is_windows_gnu = target_os == "windows" && target_env == "gnu";
     let is_windows_msvc = target_os == "windows" && target_env == "msvc";
 
     println!("cargo:rerun-if-env-changed=VECTORSCAN_LIB_DIR");
@@ -262,7 +236,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CPU_NATIVE");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_UNIT_HYPERSCAN");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_ASAN");
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_WHOLE_ARCHIVE");
 
     let manifest_dir = PathBuf::from(env("CARGO_MANIFEST_DIR"));
 
@@ -282,36 +255,30 @@ fn main() {
         println!("cargo:rustc-link-search={lib_dir}");
         println!("cargo:rustc-link-lib=dylib=vs");
     } else {
-        if !is_windows_gnu {
-            let compiler_version_out = String::from_utf8(
-                Command::new("c++")
-                    .args(["-v"])
-                    .output()
-                    .expect("Failed to get C++ compiler version")
-                    .stderr,
-            )
-            .unwrap();
+        let compiler_version_out = String::from_utf8(
+            Command::new("c++")
+                .args(["-v"])
+                .output()
+                .expect("Failed to get C++ compiler version")
+                .stderr,
+        )
+        .unwrap();
 
-            if compiler_version_out.contains("gcc") {
-                println!("cargo:rustc-link-lib=stdc++");
-            } else if compiler_version_out.contains("clang") {
-                println!("cargo:rustc-link-lib=c++");
-            } else {
-                panic!("No compatible compiler found: either clang or gcc is needed");
-            }
+        if compiler_version_out.contains("gcc") {
+            println!("cargo:rustc-link-lib=stdc++");
+        } else if compiler_version_out.contains("clang") {
+            println!("cargo:rustc-link-lib=c++");
+        } else {
+            panic!("No compatible compiler found: either clang or gcc is needed");
         }
 
         if let Some(lib_dir) = std::env::var_os("VECTORSCAN_LIB_DIR") {
             println!("cargo:rustc-link-search={}", lib_dir.display());
         } else {
-            build_vectorscan(&manifest_dir, &out_dir, is_windows_gnu);
+            build_vectorscan(&manifest_dir, &out_dir);
         }
 
-        if cfg!(feature = "whole_archive") {
-            println!("cargo:rustc-link-lib=static:+whole-archive=vs");
-        } else {
-            println!("cargo:rustc-link-lib=static=vs");
-        }
+        println!("cargo:rustc-link-lib=static=vs");
 
         #[cfg(feature = "unit_hyperscan")]
         {
