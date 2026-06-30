@@ -1,0 +1,38 @@
+Fix AVX2 end-of-data false negative in the double-shufti accelerator.
+
+run_accel() passed `c_end - 1` to shuftiDoubleExec(), stopping one byte early. The
+double-shufti character-class accelerator then over-skipped near the end of the
+buffer, so block scans (and streaming chunks) SILENTLY MISSED matches ending at the
+last byte -- e.g. `\db+` / `[0-9]b+` / `[a-c]+a.?` / `[a-c]+$` on inputs >= ~18 bytes.
+Only the AVX2 build is affected (the default SSE4.2 build is correct); reproduces on
+both clang-cl (MSVC) and gcc (Linux), so it is an upstream Vectorscan bug, present in
+5.4.11 AND 5.4.12, fixed only on `develop`.
+
+This backports the caller fix from upstream commit
+de317291e9c46f8060719f655920043fabc968ed ("shufti-double: fix regressions from #325",
+PR #368). Verified (Docker, gcc, AVX2): restores the missed matches with no false
+positives. 5.4.11 uses the pre-SuperVector shufti, so only the one-line caller change
+is needed (develop's accompanying check_last_byte / first_char_mask tweaks are for the
+newer SuperVector implementation and do not apply here).
+
+diff --git a/src/nfa/accel.c b/src/nfa/accel.c
+index 7661b7a7..c00f4993 100644
+--- a/src/nfa/accel.c
++++ b/src/nfa/accel.c
+@@ -151,11 +151,14 @@ const u8 *run_accel(const union AccelAux *accel, const u8 *c, const u8 *c_end) {
+             return c;
+         }
+ 
+-        /* need to stop one early to get an accurate end state */
++        /* Backport of upstream de317291 (PR #368): pass c_end, not c_end - 1.
++         * Stopping one byte early made shufti-double (the character-class accelerator)
++         * miss matches ending at the last byte of a buffer/chunk (an AVX2 end-of-data
++         * false negative). shuftiDoubleExec handles the final byte correctly itself. */
+         rv = shuftiDoubleExec(accel->dshufti.lo1,
+                               accel->dshufti.hi1,
+                               accel->dshufti.lo2,
+-                              accel->dshufti.hi2, c, c_end - 1);
++                              accel->dshufti.hi2, c, c_end);
+         break;
+ 
+     case ACCEL_RED_TAPE:
