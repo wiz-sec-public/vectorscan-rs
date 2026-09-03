@@ -6,6 +6,14 @@ fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("`{}` should be set in the environment", name))
 }
 
+fn cmake_bool(enabled: bool) -> &'static str {
+    if enabled {
+        "ON"
+    } else {
+        "OFF"
+    }
+}
+
 fn rename_library(dst: &Path) {
     for lib_folder in &[dst.join("lib"), dst.join("lib64")] {
         // GNU/Unix toolchains produce libhs.a; MSVC/clang-cl produces hs.lib.
@@ -108,19 +116,6 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) 
     let mut cfg = cmake::Config::new(&vectorscan_src_dir);
     cfg.out_dir(out_dir);
 
-    macro_rules! cfg_define_feature {
-        ($cmake_feature: tt, $cargo_feature: tt) => {
-            cfg.define(
-                $cmake_feature,
-                if cfg!(feature = $cargo_feature) {
-                    "ON"
-                } else {
-                    "OFF"
-                },
-            )
-        };
-    }
-
     // On MSVC build RelWithDebInfo so the static lib carries CodeView debug info
     // (optimized + PDB-able). The consuming binary keeps debug info for
     // stacktraces, and a plain Release vectorscan would contribute no symbols.
@@ -135,61 +130,37 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) 
         .define("BUILD_BENCHMARKS", "OFF")
         .define("BUILD_DOC", "OFF");
 
-    cfg_define_feature!("BUILD_UNIT", "unit_hyperscan");
-    cfg_define_feature!("USE_CPU_NATIVE", "cpu_native");
+    cfg.define("BUILD_UNIT", cmake_bool(cfg!(feature = "unit_hyperscan")));
+    cfg.define("USE_CPU_NATIVE", cmake_bool(cfg!(feature = "cpu_native")));
 
     if cfg!(feature = "asan") {
         cfg.define("SANITIZE", "address");
     }
 
-    if cfg!(feature = "fat_runtime") {
-        cfg.define("FAT_RUNTIME", "ON");
-    } else {
-        cfg.define("FAT_RUNTIME", "OFF");
+    // cfg!(target_arch) describes the build-script host, not Cargo's target.
+    let target_arch = env("CARGO_CFG_TARGET_ARCH");
+    let is_x86 = matches!(target_arch.as_str(), "x86" | "x86_64");
+    let is_aarch64 = target_arch == "aarch64";
+
+    let fat_runtime_requested = cfg!(feature = "fat_runtime");
+    let fat_runtime = fat_runtime_requested && (is_x86 || is_aarch64);
+    if fat_runtime_requested && !fat_runtime {
+        eprintln!(
+            "fat_runtime requested but not available on {target_arch}; \
+             building a single-variant runtime instead"
+        );
     }
+    cfg.define("FAT_RUNTIME", cmake_bool(fat_runtime));
 
-    if cfg!(feature = "simd_specialization") {
-        macro_rules! x86_64_feature {
-            () => {{
-                #[cfg(target_arch = "x86_64")]
-                {
-                    "ON"
-                }
-                #[cfg(not(target_arch = "x86_64"))]
-                {
-                    "OFF"
-                }
-            }};
-        }
-
-        macro_rules! aarch64_feature {
-            () => {{
-                #[cfg(target_arch = "aarch64")]
-                {
-                    "ON"
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    "OFF"
-                }
-            }};
-        }
-
-        cfg.define("BUILD_AVX2", x86_64_feature!());
-        cfg.define("BUILD_AVX512", x86_64_feature!());
-        cfg.define("BUILD_AVX512VBMI", x86_64_feature!());
-
-        cfg.define("BUILD_SVE", aarch64_feature!());
-        cfg.define("BUILD_SVE2", aarch64_feature!());
-        cfg.define("BUILD_SVE2_BITPERM", aarch64_feature!());
-    } else {
-        cfg.define("BUILD_AVX2", "OFF")
-            .define("BUILD_AVX512", "OFF")
-            .define("BUILD_AVX512VBMI", "OFF")
-            .define("BUILD_SVE", "OFF")
-            .define("BUILD_SVE2", "OFF")
-            .define("BUILD_SVE2_BITPERM", "OFF");
-    }
+    let simd_specialization = cfg!(feature = "simd_specialization");
+    let build_x86_variants = is_x86 && simd_specialization;
+    let build_arm_variants = is_aarch64 && simd_specialization;
+    cfg.define("BUILD_AVX2", cmake_bool(build_x86_variants))
+        .define("BUILD_AVX512", cmake_bool(build_x86_variants))
+        .define("BUILD_AVX512VBMI", cmake_bool(build_x86_variants))
+        .define("BUILD_SVE", cmake_bool(build_arm_variants))
+        .define("BUILD_SVE2", cmake_bool(build_arm_variants))
+        .define("BUILD_SVE2_BITPERM", cmake_bool(build_arm_variants));
 
     if is_windows_msvc {
         // Build with clang-cl so the objects are MSVC-ABI and the resulting
@@ -267,7 +238,7 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) 
         cfg.build_target("hs");
     }
 
-    if cfg!(feature = "fat_runtime") {
+    if fat_runtime {
         if is_windows_msvc {
             // MSVC fat runtime renames symbols via cmake/fat_rename.ps1, a
             // self-contained COFF pass that needs no libc symbol list.
