@@ -3,10 +3,12 @@
 
 mod error;
 mod native;
+mod platform;
 mod wrapper;
 
 pub use error::{AsResult, Error, HyperscanErrorCode};
 pub use native::*;
+pub use platform::{DbFeatures, DbTarget, db_target, runtime_variant};
 pub use wrapper::{Flag, Pattern, ScanMode, Scratch};
 
 #[cfg(test)]

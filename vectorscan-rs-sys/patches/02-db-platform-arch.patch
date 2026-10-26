@@ -1,0 +1,232 @@
+diff --git i/src/compiler/compiler.cpp w/src/compiler/compiler.cpp
+index ec9295c9..466be43d 100644
+--- i/src/compiler/compiler.cpp
++++ w/src/compiler/compiler.cpp
+@@ -455,7 +455,16 @@ bytecode_ptr<RoseEngine> generateRoseEngine(NG &ng) {
+ 
+ platform_t target_to_platform(const target_t &target_info) {
+     platform_t p;
+-    p = 0;
++    p = HS_PLATFORM_CURRENT_ARCH;
++
++    // SVE bytecode (e.g. ACCEL_VERM16, SVE-width Sheng) is emitted based on
++    // what this compiler was built for, not on target_info.
++#if !defined(HAVE_SVE)
++    p |= HS_PLATFORM_NOSVE;
++#endif
++#if !defined(HAVE_SVE2)
++    p |= HS_PLATFORM_NOSVE2;
++#endif
+ 
+     if (!target_info.has_avx2()) {
+         p |= HS_PLATFORM_NOAVX2;
+diff --git i/src/database.c w/src/database.c
+index 62e0b5e3..910c7965 100644
+--- i/src/database.c
++++ w/src/database.c
+@@ -113,10 +113,17 @@ hs_error_t HS_CDECL hs_serialize_database(const hs_database_t *db, char **bytes,
+ // runtime platform.
+ static
+ hs_error_t db_check_platform(const u64a p) {
+-    if (p != hs_current_platform
+-        && p != (hs_current_platform | hs_current_platform_no_avx2)
+-        && p != (hs_current_platform | hs_current_platform_no_avx512)
+-        && p != (hs_current_platform | hs_current_platform_no_avx512vbmi)) {
++    if ((p & HS_PLATFORM_CPU_MASK) !=
++        (hs_current_platform & HS_PLATFORM_CPU_MASK)) {
++        return HS_DB_PLATFORM_ERROR;
++    }
++    if (p & ~(u64a)(HS_PLATFORM_CPU_MASK | HS_PLATFORM_FEATURE_MASK)) {
++        return HS_DB_PLATFORM_ERROR;
++    }
++    // every feature the database requires (bit clear) must be one this
++    // runtime has (bit clear in hs_current_platform)
++    const u64a required = ~p & HS_PLATFORM_FEATURE_MASK;
++    if (required & hs_current_platform) {
+         return HS_DB_PLATFORM_ERROR;
+     }
+     // passed all checks
+@@ -365,11 +372,8 @@ hs_error_t print_database_string(char **s, u32 version, const platform_t plat,
+     u8 minor = (version >> 16) & 0xff;
+     u8 major = (version >> 24) & 0xff;
+ 
+-    const char *features = (plat & HS_PLATFORM_NOAVX512VBMI)
+-                               ? (plat & HS_PLATFORM_NOAVX512)
+-                                   ? (plat & HS_PLATFORM_NOAVX2) ? "" : "AVX2"
+-                                   : "AVX512"
+-                               : "AVX512VBMI";
++    const char *features = hs_platform_features_name(plat);
++    const char *arch = hs_platform_arch_name(plat);
+ 
+     const char *mode = NULL;
+ 
+@@ -395,8 +399,8 @@ hs_error_t print_database_string(char **s, u32 version, const platform_t plat,
+         }
+ 
+         int p_len = snprintf(
+-            buf, len, "Version: %u.%u.%u Features: %s Mode: %s",
+-            major, minor, release, features, mode);
++            buf, len, "Version: %u.%u.%u Features: %s Mode: %s Arch: %s",
++            major, minor, release, features, mode, arch);
+         if (p_len < 0) {
+             DEBUG_PRINTF("snprintf output error, returned %d\n", p_len);
+             hs_misc_free(buf);
+diff --git i/src/database.h w/src/database.h
+index b0a9c01b..a6568c5a 100644
+--- i/src/database.h
++++ w/src/database.h
+@@ -52,11 +52,30 @@ extern "C"
+ 
+ #define HS_PLATFORM_INTEL           1
+ #define HS_PLATFORM_ARM             2
++#define HS_PLATFORM_PPC64EL         3
+ #define HS_PLATFORM_CPU_MASK        0x3F
+ 
+ #define HS_PLATFORM_NOAVX2          (4<<13)
+ #define HS_PLATFORM_NOAVX512        (8<<13)
+ #define HS_PLATFORM_NOAVX512VBMI    (0x10<<13)
++#define HS_PLATFORM_NOSVE           (0x20<<13)
++#define HS_PLATFORM_NOSVE2          (0x40<<13)
++
++/** \brief All "feature not required" bits. A database may only be used by a
++ * runtime that has every feature whose bit is clear in the database header. */
++#define HS_PLATFORM_FEATURE_MASK                                               \
++    (HS_PLATFORM_NOAVX2 | HS_PLATFORM_NOAVX512 | HS_PLATFORM_NOAVX512VBMI |    \
++     HS_PLATFORM_NOSVE | HS_PLATFORM_NOSVE2)
++
++#if defined(ARCH_IA32) || defined(ARCH_X86_64)
++#define HS_PLATFORM_CURRENT_ARCH    HS_PLATFORM_INTEL
++#elif defined(ARCH_ARM32) || defined(ARCH_AARCH64)
++#define HS_PLATFORM_CURRENT_ARCH    HS_PLATFORM_ARM
++#elif defined(ARCH_PPC64EL)
++#define HS_PLATFORM_CURRENT_ARCH    HS_PLATFORM_PPC64EL
++#else
++#error "unknown platform architecture"
++#endif
+ 
+ /** \brief Platform features bitmask. */
+ typedef u64a platform_t;
+@@ -72,26 +91,52 @@ const platform_t hs_current_platform = {
+ #if !defined(HAVE_AVX512VBMI)
+     HS_PLATFORM_NOAVX512VBMI |
+ #endif
+-    0,
+-};
+-
+-static UNUSED
+-const platform_t hs_current_platform_no_avx2 = {
+-    HS_PLATFORM_NOAVX2 |
+-    HS_PLATFORM_NOAVX512 |
+-    HS_PLATFORM_NOAVX512VBMI 
++#if !defined(HAVE_SVE)
++    HS_PLATFORM_NOSVE |
++#endif
++#if !defined(HAVE_SVE2)
++    HS_PLATFORM_NOSVE2 |
++#endif
++    HS_PLATFORM_CURRENT_ARCH,
+ };
+ 
++/** \brief Name of the most specific feature set a database with platform
++ * \p plat requires, e.g. "AVX512" or "SVE2"; empty if none. */
+ static UNUSED
+-const platform_t hs_current_platform_no_avx512 = {
+-    HS_PLATFORM_NOAVX512 |
+-    HS_PLATFORM_NOAVX512VBMI
+-};
++const char *hs_platform_features_name(const platform_t plat) {
++    if (!(plat & HS_PLATFORM_NOAVX512VBMI)) {
++        return "AVX512VBMI";
++    }
++    if (!(plat & HS_PLATFORM_NOAVX512)) {
++        return "AVX512";
++    }
++    if (!(plat & HS_PLATFORM_NOAVX2)) {
++        return "AVX2";
++    }
++    if (!(plat & HS_PLATFORM_NOSVE2)) {
++        return "SVE2";
++    }
++    if (!(plat & HS_PLATFORM_NOSVE)) {
++        return "SVE";
++    }
++    return "";
++}
+ 
++/** \brief Name of the CPU architecture a database with platform \p plat was
++ * compiled for. */
+ static UNUSED
+-const platform_t hs_current_platform_no_avx512vbmi = {
+-    HS_PLATFORM_NOAVX512VBMI 
+-};
++const char *hs_platform_arch_name(const platform_t plat) {
++    switch (plat & HS_PLATFORM_CPU_MASK) {
++    case HS_PLATFORM_INTEL:
++        return "x86";
++    case HS_PLATFORM_ARM:
++        return "arm";
++    case HS_PLATFORM_PPC64EL:
++        return "ppc64el";
++    default:
++        return "unknown";
++    }
++}
+ 
+ /*
+  * a header to enclose the actual bytecode - useful for keeping info about the
+diff --git i/src/hs.cpp w/src/hs.cpp
+index 4b1b46ef..2916fc32 100644
+--- i/src/hs.cpp
++++ w/src/hs.cpp
+@@ -605,6 +605,13 @@ hs_error_t HS_CDECL hs_populate_platform(hs_platform_info_t *platform) {
+     return HS_SUCCESS;
+ }
+ 
++extern "C" HS_PUBLIC_API
++const char * HS_CDECL hs_db_target(const hs_platform_info_t *platform) {
++    const target_t target = platform ? target_t(*platform)
++                                     : get_current_target();
++    return hs_platform_features_name(target_to_platform(target));
++}
++
+ extern "C" HS_PUBLIC_API
+ hs_error_t HS_CDECL hs_free_compile_error(hs_compile_error_t *error) {
+     freeCompileError(error);
+diff --git i/src/hs_compile.h w/src/hs_compile.h
+index 5aa24188..227e2117 100644
+--- i/src/hs_compile.h
++++ w/src/hs_compile.h
+@@ -853,6 +853,33 @@ hs_error_t HS_CDECL hs_expression_ext_info(const char *expression,
+  */
+ hs_error_t HS_CDECL hs_populate_platform(hs_platform_info_t *platform);
+ 
++/**
++ * Reports the CPU feature set that databases compiled for the given platform
++ * require, as encoded in their header.
++ *
++ * A serialized database can only be deserialized by a runtime on the same CPU
++ * architecture that has every feature the database requires, so this value
++ * (together with the architecture and library version) can be used to key
++ * precompiled databases.
++ *
++ * The AVX features follow @p platform. SVE and SVE2 cannot be selected through
++ * @ref hs_platform_info_t: they are required whenever this library's compiler
++ * was itself built with SVE/SVE2 enabled (never the case in fat runtime
++ * builds), regardless of @p platform or the host CPU. The SVE vector length is
++ * not recorded, although an SVE-enabled compiler only emits some engines when
++ * the host's vector length is at least 256 bits.
++ *
++ * @param platform
++ *      The platform a database would be compiled for, as passed to the compile
++ *      calls (e.g. @ref hs_compile()), or NULL for the current host.
++ *
++ * @return
++ *      A statically allocated string, using the same names as the "Features"
++ *      field of @ref hs_database_info(): "AVX512VBMI", "AVX512", "AVX2", "SVE2",
++ *      "SVE", or the empty string if no optional features are required.
++ */
++const char * HS_CDECL hs_db_target(const hs_platform_info_t *platform);
++
+ /**
+  * @defgroup HS_PATTERN_FLAG Pattern flags
+  *

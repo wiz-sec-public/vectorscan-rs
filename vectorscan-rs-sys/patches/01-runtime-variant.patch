@@ -1,0 +1,249 @@
+diff --git i/src/dispatcher.c w/src/dispatcher.c
+index a07e943e..ff263019 100644
+--- i/src/dispatcher.c
++++ w/src/dispatcher.c
+@@ -82,12 +82,65 @@
+ #define simde_ error_
+ #endif
+ 
++enum fat_variant {
++    FAT_VARIANT_AVX512VBMI,
++    FAT_VARIANT_AVX512,
++    FAT_VARIANT_AVX2,
++    FAT_VARIANT_COREI7,
++    FAT_VARIANT_SIMDE,
++};
++
++/* Single source of truth for variant selection, shared by every resolver and
++ * by hs_runtime_variant(). */
++static enum fat_variant fat_select_variant(void) {
++    if (check_avx512vbmi()) {
++        return FAT_VARIANT_AVX512VBMI;
++    }
++    if (check_avx512()) {
++        return FAT_VARIANT_AVX512;
++    }
++    if (check_avx2()) {
++        return FAT_VARIANT_AVX2;
++    }
++    if (check_sse42() && check_popcnt()) {
++        return FAT_VARIANT_COREI7;
++    }
++    /* If no SSE4.2 is available we fallback to SIMDe */
++    return FAT_VARIANT_SIMDE;
++}
++
++static const char *fat_variant_name(enum fat_variant v) {
++    switch (v) {
++    case FAT_VARIANT_AVX512VBMI:
++        return "avx512vbmi";
++    case FAT_VARIANT_AVX512:
++        return "avx512";
++    case FAT_VARIANT_AVX2:
++        return "avx2";
++    case FAT_VARIANT_COREI7:
++        return "corei7";
++    case FAT_VARIANT_SIMDE:
++#if defined(VS_SIMDE_BACKEND)
++        return "simde";
++#else
++        return "none";
++#endif
++    }
++    return "none";
++}
++
+ #define CREATE_DISPATCH(RTYPE, NAME, ...)                                      \
+     /* error func */                                                           \
+     static inline RTYPE JOIN(error_, NAME)(__VA_ARGS__) {                      \
+         return (RTYPE)HS_ARCH_ERROR;                                           \
+     }                                                                          \
+                                                                                \
++    /* disabled variant func: the resolver's switch still names disabled */    \
++    /* variants, and is not guaranteed to be folded away */                    \
++    static inline RTYPE JOIN(disabled_, NAME)(__VA_ARGS__) {                   \
++        return (RTYPE)HS_ARCH_ERROR;                                           \
++    }                                                                          \
++                                                                               \
+     /* create defns */                                                         \
+     RTYPE JOIN(avx512vbmi_, NAME)(__VA_ARGS__);                                \
+     RTYPE JOIN(avx512_, NAME)(__VA_ARGS__);                                    \
+@@ -103,20 +156,22 @@
+                                                                                \
+     /* resolver */                                                             \
+     static RTYPE JOIN(resolve_, NAME)(__VA_ARGS__) {                           \
+-        if (check_avx512vbmi()) {                                              \
++        switch (fat_select_variant()) {                                        \
++        case FAT_VARIANT_AVX512VBMI:                                           \
+             fat_dispatch_ ## NAME = &JOIN(avx512vbmi_, NAME);                  \
+-        }                                                                      \
+-        else if (check_avx512()) {                                             \
++            break;                                                             \
++        case FAT_VARIANT_AVX512:                                               \
+             fat_dispatch_ ## NAME = &JOIN(avx512_, NAME);                      \
+-        }                                                                      \
+-        else if (check_avx2()) {                                               \
++            break;                                                             \
++        case FAT_VARIANT_AVX2:                                                 \
+             fat_dispatch_ ## NAME = &JOIN(avx2_, NAME);                        \
+-        }                                                                      \
+-        else if (check_sse42() && check_popcnt()) {                            \
++            break;                                                             \
++        case FAT_VARIANT_COREI7:                                               \
+             fat_dispatch_ ## NAME = &JOIN(corei7_, NAME);                      \
+-        } else {                                                               \
+-            /* If no SSE4.2 is available we fallback to SIMDe */               \
++            break;                                                             \
++        default:                                                               \
+             fat_dispatch_ ## NAME = &JOIN(simde_, NAME);                       \
++            break;                                                             \
+         }                                                                      \
+ 
+ 
+@@ -129,6 +184,43 @@
+ #include "util/arch/arm/cpuid_inline.h"
+ #include "util/join.h"
+ 
++enum fat_variant {
++    FAT_VARIANT_SVE2,
++    FAT_VARIANT_SVE,
++    FAT_VARIANT_NEON,
++    FAT_VARIANT_NONE,
++};
++
++/* Single source of truth for variant selection, shared by every resolver and
++ * by hs_runtime_variant(). */
++static enum fat_variant fat_select_variant(void) {
++    if (check_sve2()) {
++        return FAT_VARIANT_SVE2;
++    }
++    if (check_sve()) {
++        return FAT_VARIANT_SVE;
++    }
++    if (check_neon()) {
++        return FAT_VARIANT_NEON;
++    }
++    /* anything else is fail */
++    return FAT_VARIANT_NONE;
++}
++
++static const char *fat_variant_name(enum fat_variant v) {
++    switch (v) {
++    case FAT_VARIANT_SVE2:
++        return "sve2";
++    case FAT_VARIANT_SVE:
++        return "sve";
++    case FAT_VARIANT_NEON:
++        return "neon";
++    case FAT_VARIANT_NONE:
++        return "none";
++    }
++    return "none";
++}
++
+ #define CREATE_DISPATCH(RTYPE, NAME, ...)                                      \
+     /* create defns */                                                         \
+     RTYPE JOIN(sve2_, NAME)(__VA_ARGS__);                                      \
+@@ -148,17 +240,19 @@
+                                                                                \
+     /* resolver */                                                             \
+     static RTYPE JOIN(resolve_, NAME)(__VA_ARGS__) {                           \
+-        if (check_sve2()) {                                                    \
++        switch (fat_select_variant()) {                                        \
++        case FAT_VARIANT_SVE2:                                                 \
+             fat_dispatch_ ## NAME = &JOIN(sve2_, NAME);                        \
+-        }                                                                      \
+-        else if (check_sve()) {                                                \
++            break;                                                             \
++        case FAT_VARIANT_SVE:                                                  \
+             fat_dispatch_ ## NAME = &JOIN(sve_, NAME);                         \
+-        }                                                                      \
+-        else if (check_neon()) {                                               \
++            break;                                                             \
++        case FAT_VARIANT_NEON:                                                 \
+             fat_dispatch_ ## NAME = &JOIN(neon_, NAME);                        \
+-        } else {                                                               \
+-            /* anything else is fail */                                        \
++            break;                                                             \
++        default:                                                               \
+             fat_dispatch_ ## NAME = &JOIN(error_, NAME);                       \
++            break;                                                             \
+         }                                                                      \
+ 
+ 
+@@ -167,6 +261,11 @@
+ 
+ #endif
+ 
++HS_PUBLIC_API
++const char * HS_CDECL hs_runtime_variant(void) {
++    return fat_variant_name(fat_select_variant());
++}
++
+ 
+ #define CONNECT_ARGS_1(RTYPE, NAME, ...)                                       \
+         return (*fat_dispatch_ ## NAME)(__VA_ARGS__);                          \
+diff --git i/src/hs_common.h w/src/hs_common.h
+index 3078ad7b..c00f0abb 100644
+--- i/src/hs_common.h
++++ w/src/hs_common.h
+@@ -462,6 +462,23 @@ const char * HS_CDECL hs_version(void);
+  */
+ hs_error_t HS_CDECL hs_valid_platform(void);
+ 
++/**
++ * Utility function to report the SIMD implementation that runtime calls (such
++ * as @ref hs_scan()) dispatch to on the current system.
++ *
++ * In fat runtime builds this runs the same CPU feature checks as the runtime
++ * dispatcher, so it may be called before any database is compiled or scanned.
++ * Possible values are "avx512vbmi", "avx512", "avx2", "corei7" and "simde" on
++ * x86, "sve2", "sve" and "neon" on AArch64, and "vsx" on POWER. Fat runtime
++ * builds report "none" if no supported implementation is available.
++ * Single-implementation builds report the implementation they were compiled
++ * for, or "generic" on any other architecture.
++ *
++ * @return
++ *      A statically allocated string, which does not need to be freed.
++ */
++const char * HS_CDECL hs_runtime_variant(void);
++
+ /**
+  * @defgroup HS_ERROR hs_error_t values
+  *
+diff --git i/src/hs_valid_platform.c w/src/hs_valid_platform.c
+index 0d7b5afd..da9c08d1 100644
+--- i/src/hs_valid_platform.c
++++ w/src/hs_valid_platform.c
+@@ -66,3 +66,31 @@ hs_error_t HS_CDECL hs_valid_platform(void) {
+ #endif
+     return HS_SUCCESS;
+ }
++
++#if !defined(FAT_RUNTIME)
++/* Fat runtime builds define this in dispatcher.c. */
++HS_PUBLIC_API
++const char * HS_CDECL hs_runtime_variant(void) {
++#if defined(VS_SIMDE_BACKEND)
++    return "simde";
++#elif defined(HAVE_AVX512VBMI)
++    return "avx512vbmi";
++#elif defined(HAVE_AVX512)
++    return "avx512";
++#elif defined(HAVE_AVX2)
++    return "avx2";
++#elif defined(ARCH_IA32) || defined(ARCH_X86_64)
++    return "corei7";
++#elif defined(HAVE_SVE2)
++    return "sve2";
++#elif defined(HAVE_SVE)
++    return "sve";
++#elif defined(ARCH_ARM32) || defined(ARCH_AARCH64)
++    return "neon";
++#elif defined(ARCH_PPC64EL)
++    return "vsx";
++#else
++    return "generic";
++#endif
++}
++#endif
