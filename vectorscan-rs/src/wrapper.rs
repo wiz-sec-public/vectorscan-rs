@@ -201,6 +201,12 @@ impl SerializedDatabase {
         Database::deserialize(self)
     }
 
+    /// The serialized bytes, as produced by `hs_serialize_database`.
+    pub fn as_bytes(&self) -> &[u8] {
+        // SAFETY: `bytes` points to a `length`-byte buffer owned by `self`.
+        unsafe { std::slice::from_raw_parts(self.bytes.cast::<u8>(), self.length) }
+    }
+
     /// Gets the size in bytes required to deserialize this database using
     /// `hs_serialized_database_size`.
     pub fn deserialized_size(&self) -> Result<usize, Error> {
