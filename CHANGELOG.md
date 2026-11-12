@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Upgraded vendored version of Vectorscan from 5.4.13 to 5.4.14, which fixes silently missed matches from the 8-bit McSheng64 engine on AVX512-VBMI CPUs and disables the SVE2-BitPerm state decompression that GCC < 16 miscompiles. Rebased `msvc-support.patch` onto the reworked `build_wrapper.cmake`, keeping MSVC off the new bash/MSYS2 libc symbol-list step.
 - Upgraded vendored version of Vectorscan from 5.4.11 to 5.4.13. Dropped the local patches that 5.4.13 upstreams (static fat-runtime dispatch, non-Linux/ifunc fat runtime, pkg-config extra libs and quiet, and the double-shufti end-of-data fix) and rebased `msvc-support.patch` onto 5.4.13 (the `teddy_avx2.c` alignment hunk is obsolete after the SuperVector refactor).
 
+### Fixes
+- `hs_valid_platform()` now reports `HS_ARCH_ERROR` on x86 CPUs without SSE4.2 in fat-runtime builds. It was compiled with the SIMDe backend define and always returned success, while the library itself still requires SSE4.2, so callers could not detect an unsupported CPU and instead crashed with an illegal instruction in `hs_compile*`.
+
 
 ## [v0.0.5](https://github.com/bradlarsen/vectorscan-rs/releases/v0.0.5) (2024-12-09)
 
