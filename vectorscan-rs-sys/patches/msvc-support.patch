@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index add54a48..8ffc210f 100644
+index 8f9bf54c..e8233702 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -214,6 +214,13 @@ if (CORRECT_PCRE_VERSION AND PCRE_BUILD_SOURCE AND BUILD_STATIC_LIBS)
+@@ -223,6 +223,13 @@ if (CORRECT_PCRE_VERSION AND PCRE_BUILD_SOURCE AND BUILD_STATIC_LIBS)
  endif()
  
  set(RAGEL_C_FLAGS "-Wno-unused -funsigned-char")
@@ -16,7 +16,7 @@ index add54a48..8ffc210f 100644
  
  set_source_files_properties(
      src/parser/Parser.cpp
-@@ -1217,3 +1224,12 @@ option(BUILD_DOC "Build the Hyperscan documentation (default TRUE)" TRUE)
+@@ -1230,3 +1237,12 @@ option(BUILD_DOC "Build the Hyperscan documentation (default TRUE)" FALSE)
  if(BUILD_DOC)
      add_subdirectory(doc/dev-reference)
  endif()
@@ -30,19 +30,23 @@ index add54a48..8ffc210f 100644
 +    endforeach()
 +endif()
 diff --git a/cmake/build_wrapper.cmake b/cmake/build_wrapper.cmake
-index 80ea722f..62c716fc 100644
+index c7112f30..ef8fa48b 100644
 --- a/cmake/build_wrapper.cmake
 +++ b/cmake/build_wrapper.cmake
-@@ -1,9 +1,24 @@
+@@ -1,4 +1,6 @@
+-if (WINDOWS)
++if (MSVC)
++    # fat_rename.ps1 renames per variant and needs no libc symbol list.
++elseif (WINDOWS)
+     set(LIBC "libucrtbase.a")
+     set(LIBCSYMS ${LIBC}.syms)
+     add_custom_target(${LIBCSYMS} COMMAND ${CMAKE_COMMAND} -E env "PATH=C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;%PATH%"
+@@ -12,6 +14,23 @@ else()
+ endif()
+ 
  function(add_fat_component component objects compile_flags sources isPIC)
-     set(BUILD_WRAPPER "${PROJECT_SOURCE_DIR}/cmake/build_wrapper.sh")
-     add_library(${objects} OBJECT ${sources})
--    set_target_properties(${objects} PROPERTIES
--        COMPILE_FLAGS "${compile_flags}"
--	POSITION_INDEPENDENT_CODE ${isPIC}
--        RULE_LAUNCH_COMPILE "${BUILD_WRAPPER} ${component} ${CMAKE_MODULE_PATH}/keep.syms.in"
--        )
 +    if (MSVC)
++        add_library(${objects} OBJECT ${sources})
 +        set_target_properties(${objects} PROPERTIES
 +            COMPILE_FLAGS "${compile_flags}"
 +            POSITION_INDEPENDENT_CODE ${isPIC})
@@ -56,13 +60,11 @@ index 80ea722f..62c716fc 100644
 +            VERBATIM)
 +        add_dependencies(rename_${objects} ${objects})
 +        set_property(GLOBAL APPEND PROPERTY FAT_RENAME_TARGETS rename_${objects})
-+    else ()
-+        set_target_properties(${objects} PROPERTIES
-+            COMPILE_FLAGS "${compile_flags}"
-+            POSITION_INDEPENDENT_CODE ${isPIC}
-+            RULE_LAUNCH_COMPILE "${BUILD_WRAPPER} ${component} ${CMAKE_MODULE_PATH}/keep.syms.in")
++        return()
 +    endif ()
- endfunction()
+     if (WINDOWS)
+ 	set(BUILD_WRAPPER "${PROJECT_SOURCE_DIR}/cmake/build_wrapper_mingw.sh")
+ 	if (MSYS OR MINGW)
 diff --git a/src/ue2common.h b/src/ue2common.h
 index 525fb26c..99c6851d 100644
 --- a/src/ue2common.h
