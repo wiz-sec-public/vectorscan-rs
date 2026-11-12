@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 8f9bf54c..e8233702 100644
+index 8f9bf54c..71d10a0a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -223,6 +223,13 @@ if (CORRECT_PCRE_VERSION AND PCRE_BUILD_SOURCE AND BUILD_STATIC_LIBS)
@@ -16,7 +16,25 @@ index 8f9bf54c..e8233702 100644
  
  set_source_files_properties(
      src/parser/Parser.cpp
-@@ -1230,3 +1237,12 @@ option(BUILD_DOC "Build the Hyperscan documentation (default TRUE)" FALSE)
+@@ -1028,8 +1035,6 @@ else ()
+                 $<TARGET_OBJECTS:hs_compile>
+                 $<TARGET_OBJECTS:hs_exec_common>
+                 ${RUNTIME_LIBS})
+-            set_source_files_properties(src/hs_valid_platform.c PROPERTIES
+-                COMPILE_FLAGS "${SIMDE_FLAGS}")
+ 
+         endif (BUILD_STATIC_LIBS)
+ 
+@@ -1066,8 +1071,6 @@ else ()
+             set_target_properties(hs_exec_common_shared PROPERTIES
+                 OUTPUT_NAME hs_exec_common
+                 POSITION_INDEPENDENT_CODE TRUE)
+-            set_source_files_properties(src/hs_valid_platform.c PROPERTIES
+-                COMPILE_FLAGS "${SIMDE_FLAGS}")
+         endif() # SHARED
+     endif (ARCH_IA32 OR ARCH_X86_64)
+     if (ARCH_AARCH64)
+@@ -1230,3 +1233,12 @@ option(BUILD_DOC "Build the Hyperscan documentation (default TRUE)" FALSE)
  if(BUILD_DOC)
      add_subdirectory(doc/dev-reference)
  endif()
