@@ -195,10 +195,14 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) 
         if !boost_link.exists() {
             fs::create_dir_all(boost_root.join("include"))
                 .expect("Failed to create boost-root/include");
+            // mklink reads a '/' anywhere in an argument as a switch, and OUT_DIR can
+            // contain one (Cargo 1.100 makes it `build\<pkg>/<hash>\out`), so rebuild
+            // both paths from their components, which joins them with '\'.
+            let backslashed = |path: &Path| path.components().collect::<PathBuf>();
             let status = Command::new("cmd")
                 .args(["/C", "mklink", "/J"])
-                .arg(&boost_link)
-                .arg(&boost_target)
+                .arg(backslashed(&boost_link))
+                .arg(backslashed(&boost_target))
                 .status()
                 .expect("Failed to run mklink for boost junction");
             assert!(status.success(), "mklink /J for boost junction failed");
