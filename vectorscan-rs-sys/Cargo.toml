@@ -46,5 +46,9 @@ fat_runtime = []
 bindgen = { version = "0.70", optional = true }
 cmake = "0.1"
 
+[target.'cfg(target_os = "linux")'.build-dependencies]
+anyhow = "1"
+nix = { version = "0.30", features = ["mount", "sched", "user"] }
+
 [lib]
 doctest = false
