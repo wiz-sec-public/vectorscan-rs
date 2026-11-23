@@ -37,6 +37,13 @@ This has been tested on x86_64 Linux and x86_64 Windows (MSVC).
 Vectorscan is included as a git submodule at [`vectorscan/`](vectorscan/) pinned to tag `vectorscan/5.4.11`.
 The build script copies this source into `OUT_DIR`, applies the [patches](#patches) below, then builds via CMake.
 
+On Linux build hosts, the CMake build runs in a child process with private user
+and mount namespaces. It bind-mounts `OUT_DIR` at `/var`, giving ccache stable
+source and build paths across Cargo output directories. Cargo's linker paths
+still point to the real `OUT_DIR`. If namespace or mount setup is unavailable,
+the build falls back to using `OUT_DIR` directly. Other build hosts use the
+ordinary build without Linux-specific dependencies.
+
 To initialize after cloning:
 ```
 git submodule update --init

@@ -2,6 +2,10 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+#[path = "build_support/linux.rs"]
+mod linux;
+
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("`{}` should be set in the environment", name))
 }
@@ -61,6 +65,27 @@ fn resolve_submodule_head(submodule_dir: &Path) -> Option<PathBuf> {
 }
 
 fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) {
+    #[cfg(target_os = "linux")]
+    linux::run_contained(out_dir, |build_dir| {
+        build_vectorscan_at(manifest_dir, build_dir, is_windows_msvc);
+    });
+    #[cfg(not(target_os = "linux"))]
+    build_vectorscan_at(manifest_dir, out_dir, is_windows_msvc);
+
+    // The private mount is only visible to the build child. Override CMake's
+    // root metadata and give Cargo's linker the real output paths.
+    println!("cargo:root={}", out_dir.display());
+    println!("cargo:rustc-link-search={}", out_dir.join("lib").display());
+    println!("cargo:rustc-link-search={}", out_dir.join("lib64").display());
+    if is_windows_msvc {
+        println!(
+            "cargo:rustc-link-search={}",
+            out_dir.join("build").join("lib").display()
+        );
+    }
+}
+
+fn build_vectorscan_at(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) {
     let include_dir = out_dir
         .join("include")
         .into_os_string()
@@ -266,21 +291,11 @@ fn build_vectorscan(manifest_dir: &Path, out_dir: &Path, is_windows_msvc: bool) 
 
     rename_library(out_dir);
 
-    println!("cargo:rustc-link-search={}", out_dir.join("lib").display());
-    println!(
-        "cargo:rustc-link-search={}",
-        out_dir.join("lib64").display()
-    );
-
     if is_windows_msvc {
         // With `build_target("hs")` (no install step) the archive stays in the
         // CMake binary dir; rename hs.lib -> vs.lib there and link from it.
         let build_root = out_dir.join("build");
         rename_library(&build_root);
-        println!(
-            "cargo:rustc-link-search={}",
-            build_root.join("lib").display()
-        );
     }
 }
 
@@ -314,6 +329,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=VECTORSCAN_LIB_DIR");
 
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_support");
     println!("cargo:rerun-if-changed=patches");
     println!("cargo:rerun-if-changed=fat_rename.ps1");
 
