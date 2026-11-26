@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Additions
 - Added `runtime_variant()`, which reports the SIMD implementation the fat runtime dispatches to (e.g. `avx2`, `sve2`), backed by a new `hs_runtime_variant()` C API that shares the dispatcher's selection logic. This replaces `01-expose-fat-dispatch.patch`.
 - Added `db_target()` / `DbTarget`, which identify the kind of database compiled on this host (architecture plus required CPU features), backed by a new `hs_db_target()` C API.
+- Added `loadable_targets()`, the database targets the runtime variant can load (best first), and `compilable_targets()`, the targets this build can compile for on this host.
+- Added `BlockDatabase::new_for_target`, which compiles for a given `DbTarget` instead of the host, e.g. to serialize databases for hosts with other CPU features.
+- Added `DbFeatures::levels` and `DbFeatures::cpu_features`.
 - Added `SerializedDatabase::as_bytes`.
 
 ### Changes

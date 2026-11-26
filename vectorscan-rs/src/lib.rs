@@ -8,7 +8,9 @@ mod wrapper;
 
 pub use error::{AsResult, Error, HyperscanErrorCode};
 pub use native::*;
-pub use platform::{DbFeatures, DbTarget, db_target, runtime_variant};
+pub use platform::{
+    compilable_targets, db_target, loadable_targets, runtime_variant, DbFeatures, DbTarget,
+};
 pub use wrapper::{Flag, Pattern, ScanMode, Scratch};
 
 #[cfg(test)]

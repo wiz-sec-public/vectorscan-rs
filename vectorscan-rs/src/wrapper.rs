@@ -81,6 +81,15 @@ impl Pattern {
 
 impl Database {
     pub fn new(patterns: Vec<Pattern>, mode: ScanMode) -> Result<Self, Error> {
+        Self::compile(patterns, mode, None)
+    }
+
+    /// Compiles for `platform` rather than the current host (`None`).
+    pub(crate) fn compile(
+        patterns: Vec<Pattern>,
+        mode: ScanMode,
+        platform: Option<&hs::hs_platform_info_t>,
+    ) -> Result<Self, Error> {
         let mut c_exprs = Vec::with_capacity(patterns.len());
         let mut c_flags = Vec::with_capacity(patterns.len());
         let mut c_ids = Vec::with_capacity(patterns.len());
@@ -109,7 +118,7 @@ impl Database {
                 ptr::null(),
                 c_exprs.len() as u32,
                 mode.bits(),
-                ptr::null(),
+                platform.map_or(ptr::null(), |p| p as *const _),
                 db.as_mut_ptr(),
                 err.as_mut_ptr(),
             )

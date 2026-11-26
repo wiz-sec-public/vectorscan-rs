@@ -3,7 +3,7 @@ use std::ffi::{c_int, c_uint, c_ulonglong, c_void};
 use std::mem::MaybeUninit;
 use vectorscan_rs_sys as hs;
 
-use super::{wrapper, AsResult, Error, HyperscanErrorCode, Pattern, ScanMode};
+use super::{wrapper, AsResult, DbTarget, Error, HyperscanErrorCode, Pattern, ScanMode};
 
 // -------------------------------------------------------------------------------------------------
 // Scan Callback
@@ -31,6 +31,24 @@ impl BlockDatabase {
     /// Create a new database with the given patterns
     pub fn new(patterns: Vec<Pattern>) -> Result<Self, Error> {
         let inner = wrapper::Database::new(patterns, ScanMode::BLOCK)?;
+        Ok(Self { inner })
+    }
+
+    /// Create a new database with the given patterns, compiled for `target`
+    /// rather than for this host, e.g. to serialize it for hosts with other
+    /// CPU features. Fails with [`HyperscanErrorCode::Invalid`] unless
+    /// `target` is one of [`compilable_targets`](crate::compilable_targets).
+    /// The database can only be scanned here if `target` is also one of
+    /// [`loadable_targets`](crate::loadable_targets).
+    pub fn new_for_target(patterns: Vec<Pattern>, target: DbTarget) -> Result<Self, Error> {
+        if !target.is_compilable() {
+            return Err(Error::Hyperscan(
+                HyperscanErrorCode::Invalid,
+                hs::HS_INVALID,
+            ));
+        }
+        let platform = target.platform_info();
+        let inner = wrapper::Database::compile(patterns, ScanMode::BLOCK, Some(&platform))?;
         Ok(Self { inner })
     }
 
